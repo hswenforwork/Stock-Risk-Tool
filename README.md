@@ -27,6 +27,17 @@ npm install
 npm run dev
 ```
 
+## 帳號設定
+
+資料同步（#5）需要 FinMind API token 與 Supabase 資料庫。執行互動式設定腳本，它會一步一步帶你完成註冊、
+取得 token 與連線字串，寫入 `backend/.env`，並設為 GitHub Actions secrets（`FINMIND_TOKEN`、`DATABASE_URL`）：
+
+```sh
+scripts/setup-accounts.sh
+```
+
+需要 bash 與 curl；設定 GitHub secrets 需要先 `gh auth login`。
+
 ## 檢查
 
 ```sh
