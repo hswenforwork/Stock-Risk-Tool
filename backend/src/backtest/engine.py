@@ -1,7 +1,8 @@
 """回測引擎：策略 JSON＋行情資料＋回測設定 → 績效報告。
 
 純計算，不碰資料庫與網路。每個交易日收盤後由上往下比對規則，
-只執行第一條成立的規則，在下一個有成交的交易日開盤成交（ADR 0007）。
+只執行第一條「適用且條件成立」的規則，在下一個有成交的交易日開盤成交。
+買進採層模型、賣出採出場比例（ADR 0007）。
 回測起始日以前的行情只用來讓條件積木暖機。
 """
 
@@ -21,12 +22,15 @@ FEE_RATE = 0.001425
 STOCK_TAX_RATE = 0.003
 ETF_TAX_RATE = 0.001
 BOARD_LOT = 1000
+EPSILON = 1e-9
+
+BUY_ACTIONS = {"entry", "add"}
 
 
 def run_backtest(
     strategy: Strategy, bars: list[Bar], settings: BacktestSettings
 ) -> PerformanceReport:
-    account = _Account(settings)
+    account = _Account(strategy, settings)
     history: list[Bar] = []  # 有成交的交易日，供條件積木計算
     pending: Rule | None = None
     delayed = False
@@ -46,7 +50,7 @@ def run_backtest(
         history.append(bar)
         if settings.start_date is None or bar.date >= settings.start_date:
             last_close = bar.close
-            pending = _first_matching_rule(strategy, history, holding=account.shares > 0)
+            pending = _first_matching_rule(strategy, history, account)
 
     final_equity = account.cash + account.shares * (last_close or 0)
     return PerformanceReport(
@@ -58,56 +62,113 @@ def run_backtest(
 
 
 class _Account:
-    def __init__(self, settings: BacktestSettings):
+    """現金與一段持倉的狀態。"""
+
+    def __init__(self, strategy: Strategy, settings: BacktestSettings):
+        self.strategy = strategy
         self.settings = settings
+        self.unit = BOARD_LOT if settings.lot == "board" else 1
         self.cash = settings.initial_capital
-        self.shares = 0
         self.trades: list[Trade] = []
+        self._reset_position()
+
+    def _reset_position(self) -> None:
+        self.shares = 0
+        self.planned_capital = 0.0  # 預計投入資金
+        self.layers_filled = 0
+        self.avg_cost = 0.0
+        self.last_buy_price: float | None = None
+        self.last_sell_price: float | None = None
+        self.exit_base = 0  # 本輪出場開始時的持股
+        self.batches_sold = 0  # 本輪已賣出的批數
+
+    @property
+    def holding(self) -> bool:
+        return self.shares > 0
+
+    def applicable(self, rule: Rule, close: float) -> bool:
+        match rule.action:
+            case "entry":
+                return not self.holding
+            case "add":
+                # 現金買不起一個成交單位時不適用，以免每天佔掉執行機會、擋住後面的規則
+                return (
+                    self.holding
+                    and self.layers_filled < len(self.strategy.entry_ratios)
+                    and self.cash >= close * self.unit
+                )
+            case "exit":
+                return self.holding and self.batches_sold == 0
+            case "reduce":
+                return self.holding and self.batches_sold > 0
+            case _:  # stop_loss、take_profit
+                return self.holding
 
     def execute(self, rule: Rule, bar: Bar, delayed: bool) -> None:
-        if rule.action == "entry":
-            self._buy(bar, delayed)
+        if rule.action in BUY_ACTIONS:
+            self._buy(rule, bar, delayed)
+        elif rule.action == "stop_loss":
+            self._sell(rule, bar, delayed, self.shares)
         else:
-            self._sell(bar, delayed)
+            self._sell(rule, bar, delayed, self._next_exit_batch())
 
-    def _buy(self, bar: Bar, delayed: bool) -> None:
+    def _buy(self, rule: Rule, bar: Bar, delayed: bool) -> None:
+        if rule.action == "entry":
+            self.planned_capital = self.cash
+        ratio = self.strategy.entry_ratios[self.layers_filled]
+        budget = min(self.planned_capital * ratio, self.cash)
         price = bar.open * (1 + self.settings.slippage)
-        unit = BOARD_LOT if self.settings.lot == "board" else 1
-        rate = FEE_RATE * self.settings.fee_discount
-        shares = math.floor(self.cash / (price * (1 + rate)) / unit) * unit
-        while shares > 0 and shares * price + self._fee(shares * price) > self.cash:
-            shares -= unit
+
+        shares = self._affordable_shares(budget, price)
         if shares <= 0:
             return
 
         amount = shares * price
         fee = self._fee(amount)
         self.cash -= amount + fee
+        self.avg_cost = (self.avg_cost * self.shares + amount) / (self.shares + shares)
         self.shares += shares
-        self.trades.append(
-            Trade(
-                date=bar.date,
-                action="entry",
-                shares=shares,
-                price=price,
-                fee=fee,
-                tax=0,
-                delayed=delayed,
-            )
-        )
+        self.layers_filled += 1
+        self.last_buy_price = price
+        self.batches_sold = 0  # 加碼後，出場批次重新從第一批算
+        self._record(rule, bar, delayed, self.layers_filled, shares, price, fee, 0)
 
-    def _sell(self, bar: Bar, delayed: bool) -> None:
+    def _affordable_shares(self, budget: float, price: float) -> int:
+        rate = FEE_RATE * self.settings.fee_discount
+        shares = math.floor(budget / (price * (1 + rate)) / self.unit) * self.unit
+        while shares > 0 and shares * price + self._fee(shares * price) > budget + EPSILON:
+            shares -= self.unit
+        return shares
+
+    def _next_exit_batch(self) -> int:
+        if self.batches_sold == 0:
+            self.exit_base = self.shares
+        ratios = self.strategy.exit_ratios
+        if self.batches_sold >= len(ratios) - 1:
+            return self.shares  # 最後一批賣出全部剩餘持股
+        shares = math.floor(self.exit_base * ratios[self.batches_sold] / self.unit) * self.unit
+        return min(max(shares, self.unit), self.shares)
+
+    def _sell(self, rule: Rule, bar: Bar, delayed: bool, shares: int) -> None:
         price = bar.open * (1 - self.settings.slippage)
-        shares = self.shares
         amount = shares * price
         fee = self._fee(amount)
         tax = _floor(amount * (ETF_TAX_RATE if self.settings.is_etf else STOCK_TAX_RATE))
         self.cash += amount - fee - tax
-        self.shares = 0
+        self.shares -= shares
+        self.batches_sold += 1
+        self.layers_filled = max(self.layers_filled - 1, 0)  # 釋出最上面一層
+        self.last_sell_price = price
+        self._record(rule, bar, delayed, self.batches_sold, shares, price, fee, tax)
+        if not self.holding:
+            self._reset_position()
+
+    def _record(self, rule, bar, delayed, batch, shares, price, fee, tax) -> None:
         self.trades.append(
             Trade(
                 date=bar.date,
-                action="exit",
+                action=rule.action,
+                batch=batch,
                 shares=shares,
                 price=price,
                 fee=fee,
@@ -123,21 +184,49 @@ class _Account:
 
 def _floor(value: float) -> int:
     # 加上極小值，避免浮點誤差讓 2.0 變成 1.999… 被捨去成 1
-    return math.floor(value + 1e-9)
+    return math.floor(value + EPSILON)
 
 
-def _first_matching_rule(strategy: Strategy, history: list[Bar], holding: bool) -> Rule | None:
+def _first_matching_rule(strategy: Strategy, history: list[Bar], account: _Account) -> Rule | None:
     for rule in strategy.rules:
-        applicable = (rule.action == "entry") != holding
-        if applicable and _condition_holds(rule.condition, history):
+        if account.applicable(rule, history[-1].close) and _holds(rule.condition, history, account):
             return rule
     return None
 
 
-def _condition_holds(condition: Condition, history: list[Bar]) -> bool:
-    period = condition.period
-    if len(history) < period:
-        return False
-    sma = sum(b.close for b in history[-period:]) / period
+def _holds(condition: Condition, history: list[Bar], account: _Account) -> bool:
     close = history[-1].close
-    return close > sma if condition.op == "above" else close < sma
+    match condition.type:
+        case "all":
+            return all(_holds(c, history, account) for c in condition.conditions)
+        case "any":
+            return any(_holds(c, history, account) for c in condition.conditions)
+        case "close_vs_value":
+            return _compare(close, condition.op, condition.value)
+        case "close_vs_sma":
+            if len(history) < condition.period:
+                return False
+            sma = sum(b.close for b in history[-condition.period :]) / condition.period
+            return _compare(close, condition.op, sma)
+        case "price_vs_last_buy":
+            return account.holding and _moved(close, account.last_buy_price, condition)
+        case "price_vs_last_sell":
+            reference = account.last_sell_price or account.avg_cost
+            return account.holding and _moved(close, reference, condition)
+        case "pnl_vs_avg_cost":
+            op = "up" if condition.op == "gain" else "down"
+            return account.holding and _moved(close, account.avg_cost, condition, op)
+    raise ValueError(f"未知的條件積木：{condition.type}")
+
+
+def _compare(value: float, op: str, reference: float) -> bool:
+    return value > reference if op == "above" else value < reference
+
+
+def _moved(close: float, reference: float | None, condition, op: str | None = None) -> bool:
+    """收盤價相對基準上漲（up）或下跌（down）至少 condition.pct。"""
+    if not reference:
+        return False
+    if (op or condition.op) == "up":
+        return close >= reference * (1 + condition.pct) - EPSILON
+    return close <= reference * (1 - condition.pct) + EPSILON

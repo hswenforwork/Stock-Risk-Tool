@@ -11,6 +11,7 @@ const REPORT = {
     {
       date: '2021-02-01',
       action: 'entry',
+      batch: 1,
       shares: 1990,
       price: 500.5,
       fee: 851,
@@ -19,8 +20,19 @@ const REPORT = {
     },
     {
       date: '2021-03-15',
+      action: 'add',
+      batch: 2,
+      shares: 600,
+      price: 520,
+      fee: 266,
+      tax: 0,
+      delayed: false,
+    },
+    {
+      date: '2021-04-01',
       action: 'exit',
-      shares: 1990,
+      batch: 1,
+      shares: 1290,
       price: 560.44,
       fee: 953,
       tax: 3345,
@@ -61,13 +73,17 @@ test('按下回測後顯示總報酬與交易明細', async () => {
   )
 
   const rows = within(screen.getByRole('table', { name: '交易明細' })).getAllByRole('row')
-  expect(rows).toHaveLength(3) // 表頭 + 2 筆
+  expect(rows).toHaveLength(4) // 表頭 + 3 筆
   expect(rows[1]).toHaveTextContent('2021-02-01')
   expect(rows[1]).toHaveTextContent('進場')
+  expect(rows[1]).toHaveTextContent('第 1 層')
   expect(rows[1]).toHaveTextContent('1,990')
-  expect(rows[2]).toHaveTextContent('出場')
-  expect(rows[2]).toHaveTextContent('3,345')
-  expect(rows[2]).toHaveTextContent('延後')
+  expect(rows[2]).toHaveTextContent('加碼')
+  expect(rows[2]).toHaveTextContent('第 2 層')
+  expect(rows[3]).toHaveTextContent('出場')
+  expect(rows[3]).toHaveTextContent('第 1 批')
+  expect(rows[3]).toHaveTextContent('3,345')
+  expect(rows[3]).toHaveTextContent('延後')
 })
 
 test('預設以零股成交，可以改成整張', async () => {

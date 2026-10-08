@@ -11,9 +11,13 @@ export type BacktestSettings = {
   lot: Lot
 }
 
+export type Action = 'entry' | 'add' | 'reduce' | 'exit' | 'stop_loss' | 'take_profit'
+
 export type Trade = {
   date: string
-  action: 'entry' | 'exit'
+  action: Action
+  /** 買進時是第幾層，賣出時是本輪出場的第幾批 */
+  batch: number
   shares: number
   price: number
   fee: number

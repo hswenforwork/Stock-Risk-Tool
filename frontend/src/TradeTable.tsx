@@ -1,8 +1,18 @@
-import type { Trade } from './api'
+import type { Action, Trade } from './api'
 
-const ACTION_LABELS: Record<Trade['action'], string> = {
+const ACTION_LABELS: Record<Action, string> = {
   entry: '進場',
+  add: '加碼',
+  reduce: '減碼',
   exit: '出場',
+  stop_loss: '停損',
+  take_profit: '停利',
+}
+
+const BUY_ACTIONS: ReadonlySet<Action> = new Set(['entry', 'add'])
+
+function batchLabel(t: Trade): string {
+  return BUY_ACTIONS.has(t.action) ? `第 ${t.batch} 層` : `第 ${t.batch} 批`
 }
 
 const integer = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 })
@@ -18,6 +28,7 @@ export function TradeTable({ trades }: { trades: Trade[] }) {
           <tr>
             <th>日期</th>
             <th>動作</th>
+            <th>層／批</th>
             <th className="num">股數</th>
             <th className="num">成交價</th>
             <th className="num">手續費</th>
@@ -27,9 +38,10 @@ export function TradeTable({ trades }: { trades: Trade[] }) {
         </thead>
         <tbody>
           {trades.map((t) => (
-            <tr key={`${t.date}-${t.action}`}>
+            <tr key={`${t.date}-${t.action}-${t.batch}`}>
               <td>{t.date}</td>
               <td>{ACTION_LABELS[t.action]}</td>
+              <td>{batchLabel(t)}</td>
               <td className="num">{integer.format(t.shares)}</td>
               <td className="num">{price.format(t.price)}</td>
               <td className="num">{integer.format(t.fee)}</td>
