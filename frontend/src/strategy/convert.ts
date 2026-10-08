@@ -12,14 +12,19 @@ type BlockState = Blockly.serialization.blocks.State
 export type WorkspaceState = { blocks?: { languageVersion: number; blocks: BlockState[] } }
 
 export type ConversionResult =
-  | { ok: true; strategy: Strategy }
+  | { ok: true; strategy: Strategy; warnings: string[] }
   | { ok: false; errors: string[] }
-
-/** 目前編輯器只提供進場與出場，所以一次全進、一次全出（分批設定見 #11）。 */
-const ALL_AT_ONCE = [1]
 
 const CONDITION_TYPE_BY_BLOCK = new Map(CONDITION_BLOCKS.map((b) => [b.type, b.conditionType]))
 const BLOCK_BY_CONDITION_TYPE = new Map(CONDITION_BLOCKS.map((b) => [b.conditionType, b]))
+const PERCENT_FIELDS = new Map(CONDITION_BLOCKS.map((b) => [b.type, new Set(b.percentFields)]))
+
+const STOP_LOSS_NOT_FIRST = '停損規則沒有排在第一條：同一天其他規則成立時，停損可能不會執行。'
+
+/** 去掉浮點誤差，例如 0.07 × 100 = 7.000000000000001。 */
+function clean(value: number): number {
+  return Math.round(value * 1e10) / 1e10
+}
 
 // --- 工作區 → 策略 JSON ---------------------------------------------------
 
@@ -40,17 +45,47 @@ export function stateToStrategy(state: WorkspaceState): ConversionResult {
     block = block.next?.block
   }
   if (rules.length === 0) errors.push('策略至少需要一條規則。')
+  const entryRatios = parseRatios('進場比例', root.fields?.ENTRY_RATIOS, errors)
+  const exitRatios = parseRatios('出場比例', root.fields?.EXIT_RATIOS, errors)
   if (errors.length > 0) return { ok: false, errors }
+
+  const warnings: string[] = []
+  const stopLossIndex = rules.findIndex((r) => r.action === 'stop_loss')
+  if (stopLossIndex > 0) warnings.push(STOP_LOSS_NOT_FIRST)
 
   return {
     ok: true,
     strategy: {
       version: STRATEGY_FORMAT_VERSION,
       rules,
-      entry_ratios: ALL_AT_ONCE,
-      exit_ratios: ALL_AT_ONCE,
+      entry_ratios: entryRatios!,
+      exit_ratios: exitRatios!,
     },
+    warnings,
   }
+}
+
+/** 「50/30/20」→ [0.5, 0.3, 0.2]；1 到 5 批、每批大於 0、合計 100%。 */
+function parseRatios(name: string, text: unknown, errors: string[]): number[] | null {
+  const parts = String(text ?? '')
+    .split('/')
+    .map((p) => p.trim())
+  const percents = parts.map(Number)
+  const valid =
+    parts.length >= 1 &&
+    parts.length <= 5 &&
+    parts.every((p) => p !== '') &&
+    percents.every((p) => Number.isFinite(p) && p > 0) &&
+    Math.abs(percents.reduce((a, b) => a + b, 0) - 100) < 1e-6
+  if (!valid) {
+    errors.push(`${name}必須是 1 到 5 個以「/」分隔、大於 0、合計 100 的百分比，例如 50/30/20。`)
+    return null
+  }
+  return percents.map((p) => clean(p / 100))
+}
+
+function formatRatios(ratios: number[]): string {
+  return ratios.map((r) => clean(r * 100)).join('/')
 }
 
 function toCondition(block: BlockState, errors: string[], ruleNumber: number): Condition | null {
@@ -75,8 +110,12 @@ function toCondition(block: BlockState, errors: string[], ruleNumber: number): C
     errors.push(`第 ${ruleNumber} 條規則含有不認得的積木：${block.type}`)
     return null
   }
+  const percent = PERCENT_FIELDS.get(block.type)!
   const fields = Object.fromEntries(
-    Object.entries(block.fields ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
+    Object.entries(block.fields ?? {}).map(([name, value]) => [
+      name.toLowerCase(),
+      percent.has(name) ? clean(Number(value) / 100) : value,
+    ]),
   )
   return { type: conditionType, ...fields } as Condition
 }
@@ -102,6 +141,10 @@ export function strategyToState(strategy: Strategy): WorkspaceState {
           x: 20,
           y: 20,
           deletable: false,
+          fields: {
+            ENTRY_RATIOS: formatRatios(strategy.entry_ratios),
+            EXIT_RATIOS: formatRatios(strategy.exit_ratios),
+          },
           ...(rules && { inputs: { RULES: { block: rules } } }),
         },
       ],
@@ -125,10 +168,14 @@ function toBlock(condition: Condition): BlockState {
 
   const definition = BLOCK_BY_CONDITION_TYPE.get(condition.type)
   if (!definition) throw new Error(`編輯器不支援的條件積木：${condition.type}`)
+  const percent = new Set(definition.percentFields)
   const fields = Object.fromEntries(
     Object.entries(condition)
       .filter(([key]) => key !== 'type')
-      .map(([key, value]) => [key.toUpperCase(), value]),
+      .map(([key, value]) => {
+        const name = key.toUpperCase()
+        return [name, percent.has(name) ? clean((value as number) * 100) : value]
+      }),
   )
   return { type: definition.type, fields }
 }

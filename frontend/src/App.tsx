@@ -29,7 +29,11 @@ export default function App() {
   const [report, setReport] = useState<PerformanceReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [edited, setEdited] = useState<ConversionResult>({ ok: true, strategy: DEFAULT_STRATEGY })
+  const [edited, setEdited] = useState<ConversionResult>({
+    ok: true,
+    strategy: DEFAULT_STRATEGY,
+    warnings: [],
+  })
   const handleStrategyChange = useCallback((result: ConversionResult) => setEdited(result), [])
 
   // ISO 日期字串可以直接比較先後
@@ -61,7 +65,8 @@ export default function App() {
     <main>
       <h1>台股回測系統</h1>
       <p className="muted">
-        從左側拖拉積木組合策略，接到「策略」積木底下；目前一次全進、一次全出。行情為示範資料。
+        從左側拖拉積木組合策略，接到「策略」積木底下；在「策略」積木上設定進場與出場的分批比例。
+        行情為示範資料。
       </p>
 
       <Suspense fallback={<div className="strategy-editor muted">載入策略編輯器中…</div>}>
@@ -70,6 +75,13 @@ export default function App() {
       {!edited.ok && (
         <ul aria-label="策略的問題" className="problems">
           {edited.errors.map((message) => (
+            <li key={message}>{message}</li>
+          ))}
+        </ul>
+      )}
+      {edited.ok && edited.warnings.length > 0 && (
+        <ul aria-label="策略的提醒" className="warnings">
+          {edited.warnings.map((message) => (
             <li key={message}>{message}</li>
           ))}
         </ul>
