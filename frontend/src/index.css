@@ -1,0 +1,60 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5f6368;
+  --accent: #1a56db;
+  --up: #c62828;
+  --down: #2e7d32;
+  font-family: system-ui, -apple-system, 'Noto Sans TC', 'PingFang TC', sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --fg: #e8eaed;
+    --muted: #9aa0a6;
+    --accent: #8ab4f8;
+    --up: #ef5350;
+    --down: #66bb6a;
+  }
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+button {
+  font: inherit;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* 台股慣例：漲紅跌綠 */
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
