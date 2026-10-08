@@ -18,3 +18,8 @@ Issue 存放在本 repo 的 GitHub Issues（hswenforwork/Stock-Risk-Tool）。�
 ### 領域文件
 
 單一情境（single-context）：repo 根目錄放一份 `GLOSSARY.md` 與 `docs/adr/`。詳見 `docs/agents/domain.md`。
+
+## 開發
+
+- 本機啟動與檢查指令見 `README.md`。
+- 回測引擎（`backend/src/backtest/`）必須維持純計算，不得依賴資料庫或網路；以「策略 JSON＋行情資料＋回測設定 → 績效報告」為測試切入點，用 TDD 開發。
