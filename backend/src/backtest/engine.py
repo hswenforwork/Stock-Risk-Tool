@@ -8,6 +8,7 @@
 
 import math
 
+from . import indicators
 from .models import (
     BacktestSettings,
     Bar,
@@ -30,27 +31,27 @@ BUY_ACTIONS = {"entry", "add"}
 def run_backtest(
     strategy: Strategy, bars: list[Bar], settings: BacktestSettings
 ) -> PerformanceReport:
+    bars = [b for b in bars if settings.end_date is None or b.date <= settings.end_date]
+    market = _Market([b for b in bars if b.close > 0])  # 有成交的交易日，供條件積木計算
     account = _Account(strategy, settings)
-    history: list[Bar] = []  # 有成交的交易日，供條件積木計算
     pending: Rule | None = None
     delayed = False
     last_close: float | None = None
+    i = -1  # 目前是第幾個有成交的交易日
 
     for bar in bars:
-        if settings.end_date and bar.date > settings.end_date:
-            break
         if bar.close <= 0:
             delayed = pending is not None
             continue
+        i += 1
 
         if pending is not None:
             account.execute(pending, bar, delayed)
             pending, delayed = None, False
 
-        history.append(bar)
         if settings.start_date is None or bar.date >= settings.start_date:
             last_close = bar.close
-            pending = _first_matching_rule(strategy, history, account)
+            pending = _first_matching_rule(strategy, market, i, account)
 
     final_equity = account.cash + account.shares * (last_close or 0)
     return PerformanceReport(
@@ -187,27 +188,95 @@ def _floor(value: float) -> int:
     return math.floor(value + EPSILON)
 
 
-def _first_matching_rule(strategy: Strategy, history: list[Bar], account: _Account) -> Rule | None:
+def _first_matching_rule(
+    strategy: Strategy, market: "_Market", i: int, account: _Account
+) -> Rule | None:
+    close = market.closes[i]
     for rule in strategy.rules:
-        if account.applicable(rule, history[-1].close) and _holds(rule.condition, history, account):
+        if account.applicable(rule, close) and _holds(rule.condition, market, i, account):
             return rule
     return None
 
 
-def _holds(condition: Condition, history: list[Bar], account: _Account) -> bool:
-    close = history[-1].close
+class _Market:
+    """有成交的交易日行情，以及依參數快取的指標序列（只存在這次回測）。"""
+
+    def __init__(self, bars: list[Bar]):
+        self.closes = [b.close for b in bars]
+        self.highs = [b.high for b in bars]
+        self.lows = [b.low for b in bars]
+        self.volumes = [b.volume for b in bars]
+        self._cache: dict[tuple, object] = {}
+
+    def _cached(self, key: tuple, compute):
+        if key not in self._cache:
+            self._cache[key] = compute()
+        return self._cache[key]
+
+    def sma(self, period: int) -> indicators.Series:
+        return self._cached(("sma", period), lambda: indicators.sma(self.closes, period))
+
+    def rsi(self, period: int) -> indicators.Series:
+        return self._cached(("rsi", period), lambda: indicators.rsi(self.closes, period))
+
+    def macd(self, fast: int, slow: int, signal: int):
+        return self._cached(
+            ("macd", fast, slow, signal),
+            lambda: indicators.macd(self.closes, fast, slow, signal),
+        )
+
+    def kd(self, period: int):
+        return self._cached(
+            ("kd", period), lambda: indicators.kd(self.highs, self.lows, self.closes, period)
+        )
+
+    def bollinger(self, period: int, width: float):
+        return self._cached(
+            ("bollinger", period, width), lambda: indicators.bollinger(self.closes, period, width)
+        )
+
+    def volume_average(self, period: int) -> indicators.Series:
+        return self._cached(
+            ("volume_average", period), lambda: indicators.previous_average(self.volumes, period)
+        )
+
+
+def _holds(condition: Condition, market: _Market, i: int, account: _Account) -> bool:
+    close = market.closes[i]
     match condition.type:
         case "all":
-            return all(_holds(c, history, account) for c in condition.conditions)
+            return all(_holds(c, market, i, account) for c in condition.conditions)
         case "any":
-            return any(_holds(c, history, account) for c in condition.conditions)
+            return any(_holds(c, market, i, account) for c in condition.conditions)
         case "close_vs_value":
             return _compare(close, condition.op, condition.value)
         case "close_vs_sma":
-            if len(history) < condition.period:
+            return _compare(close, condition.op, market.sma(condition.period)[i])
+        case "sma_cross":
+            fast, slow = market.sma(condition.fast), market.sma(condition.slow)
+            return _crossed(fast, slow, i, condition.op)
+        case "rsi":
+            return _compare(market.rsi(condition.period)[i], condition.op, condition.value)
+        case "macd_cross":
+            dif, dem = market.macd(condition.fast, condition.slow, condition.signal)
+            return _crossed(dif, dem, i, condition.op)
+        case "kd_cross":
+            k, d = market.kd(condition.period)
+            return _crossed(k, d, i, condition.op)
+        case "kd_level":
+            k, d = market.kd(condition.period)
+            line = k if condition.line == "k" else d
+            return _compare(line[i], condition.op, condition.value)
+        case "bollinger":
+            upper, lower = market.bollinger(condition.period, condition.std)
+            if condition.op == "above_upper":
+                return _compare(close, "above", upper[i])
+            return _compare(close, "below", lower[i])
+        case "volume_vs_avg":
+            average = market.volume_average(condition.period)[i]
+            if average is None:
                 return False
-            sma = sum(b.close for b in history[-condition.period :]) / condition.period
-            return _compare(close, condition.op, sma)
+            return _compare(market.volumes[i], condition.op, average * condition.multiple)
         case "price_vs_last_buy":
             return account.holding and _moved(close, account.last_buy_price, condition)
         case "price_vs_last_sell":
@@ -219,7 +288,19 @@ def _holds(condition: Condition, history: list[Bar], account: _Account) -> bool:
     raise ValueError(f"未知的條件積木：{condition.type}")
 
 
-def _compare(value: float, op: str, reference: float) -> bool:
+def _crossed(a: indicators.Series, b: indicators.Series, i: int, op: str) -> bool:
+    """黃金交叉：前一天 a <= b、今天 a > b；死亡交叉：前一天 a >= b、今天 a < b。"""
+    if i < 1 or None in (a[i], b[i], a[i - 1], b[i - 1]):
+        return False
+    if op == "golden":
+        return a[i - 1] <= b[i - 1] and a[i] > b[i]
+    return a[i - 1] >= b[i - 1] and a[i] < b[i]
+
+
+def _compare(value: float | None, op: str, reference: float | None) -> bool:
+    """指標還在暖機（None）時一律不成立。"""
+    if value is None or reference is None:
+        return False
     return value > reference if op == "above" else value < reference
 
 
