@@ -1,7 +1,29 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, expect, test, vi } from 'vitest'
+import { useEffect } from 'react'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import App from './App'
+import type { ConversionResult } from './strategy/convert'
+
+// Blockly 需要真正的瀏覽器排版，這裡以假的編輯器代替；編輯器本身由 strategy/ 的測試涵蓋
+const editor = vi.hoisted(() => ({ result: null as unknown }))
+vi.mock('./strategy/StrategyEditor', () => ({
+  StrategyEditor: ({ onChange }: { onChange: (r: ConversionResult) => void }) => {
+    useEffect(() => onChange(editor.result as ConversionResult), [onChange])
+    return <div>策略編輯器</div>
+  },
+}))
+
+const STRATEGY = {
+  version: 1,
+  entry_ratios: [1],
+  exit_ratios: [1],
+  rules: [{ action: 'entry', condition: { type: 'rsi', op: 'below', period: 14, value: 30 } }],
+}
+
+beforeEach(() => {
+  editor.result = { ok: true, strategy: STRATEGY }
+})
 
 const REPORT = {
   initial_capital: 1_000_000,
@@ -131,6 +153,27 @@ test('後端拒絕設定時顯示原因', async () => {
   await userEvent.click(screen.getByRole('button', { name: '回測' }))
 
   expect(await screen.findByRole('alert')).toHaveTextContent('回測結束日不得早於起始日')
+})
+
+test('送出編輯器產生的策略 JSON', async () => {
+  const fetchMock = stubFetch(REPORT)
+
+  render(<App />)
+  await screen.findByText('策略編輯器') // 等延遲載入的編輯器回報策略
+  await userEvent.click(screen.getByRole('button', { name: '回測' }))
+
+  expect(sentBody(fetchMock).strategy).toEqual(STRATEGY)
+})
+
+test('策略不完整時列出問題且不能回測', async () => {
+  editor.result = { ok: false, errors: ['第 1 條規則缺少條件。', '第 2 條規則缺少條件。'] }
+
+  render(<App />)
+
+  const problems = await screen.findByRole('list', { name: '策略的問題' })
+  expect(within(problems).getAllByRole('listitem')).toHaveLength(2)
+  expect(problems).toHaveTextContent('第 1 條規則缺少條件。')
+  expect(screen.getByRole('button', { name: '回測' })).toBeDisabled()
 })
 
 test('回測失敗時顯示錯誤訊息', async () => {

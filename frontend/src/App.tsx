@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useCallback, useState } from 'react'
 import {
   BacktestError,
   EARLIEST_START_DATE,
@@ -6,9 +6,16 @@ import {
   type PerformanceReport,
   runBacktest,
 } from './api'
+import type { ConversionResult } from './strategy/convert'
+import { DEFAULT_STRATEGY } from './strategy/defaults'
 import { TradeTable } from './TradeTable'
 
 const INITIAL_CAPITAL = 1_000_000
+
+// Blockly 很大，延遲載入，不拖慢其他頁面
+const StrategyEditor = lazy(() =>
+  import('./strategy/StrategyEditor').then((m) => ({ default: m.StrategyEditor })),
+)
 
 function formatPercent(ratio: number): string {
   const sign = ratio > 0 ? '+' : ''
@@ -22,11 +29,14 @@ export default function App() {
   const [report, setReport] = useState<PerformanceReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [edited, setEdited] = useState<ConversionResult>({ ok: true, strategy: DEFAULT_STRATEGY })
+  const handleStrategyChange = useCallback((result: ConversionResult) => setEdited(result), [])
 
   // ISO 日期字串可以直接比較先後
   const startTooEarly = startDate !== '' && startDate < EARLIEST_START_DATE
 
   async function handleRun() {
+    if (!edited.ok) return
     setRunning(true)
     setError(null)
     try {
@@ -34,6 +44,7 @@ export default function App() {
         await runBacktest({
           initial_capital: INITIAL_CAPITAL,
           lot,
+          strategy: edited.strategy,
           ...(startDate && { start_date: startDate }),
           ...(endDate && { end_date: endDate }),
         }),
@@ -50,10 +61,19 @@ export default function App() {
     <main>
       <h1>台股回測系統</h1>
       <p className="muted">
-        示範策略（行情為示範資料）：收盤價站上 20 日均線進場，比上一批買進價上漲 3% 加碼，
-        依 50/30/20 分三層；跌破 20 日均線出場、比上一批賣出價再跌 3% 減碼，依 50/50
-        分兩批；虧損 8% 停損。
+        從左側拖拉積木組合策略，接到「策略」積木底下；目前一次全進、一次全出。行情為示範資料。
       </p>
+
+      <Suspense fallback={<div className="strategy-editor muted">載入策略編輯器中…</div>}>
+        <StrategyEditor initialStrategy={DEFAULT_STRATEGY} onChange={handleStrategyChange} />
+      </Suspense>
+      {!edited.ok && (
+        <ul aria-label="策略的問題" className="problems">
+          {edited.errors.map((message) => (
+            <li key={message}>{message}</li>
+          ))}
+        </ul>
+      )}
 
       <form
         className="settings"
@@ -87,7 +107,7 @@ export default function App() {
             <option value="board">整張</option>
           </select>
         </label>
-        <button type="submit" disabled={running || startTooEarly}>
+        <button type="submit" disabled={running || startTooEarly || !edited.ok}>
           回測
         </button>
       </form>

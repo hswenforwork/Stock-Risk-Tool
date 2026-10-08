@@ -30,6 +30,82 @@ class CloseVsSma(BaseModel):
     period: int = Field(ge=1)
 
 
+class SmaCross(BaseModel):
+    """條件積木：短天期均線向上（golden，黃金交叉）或向下（death，死亡交叉）穿越長天期均線。"""
+
+    type: Literal["sma_cross"]
+    op: Literal["golden", "death"]
+    fast: int = Field(ge=1)
+    slow: int = Field(ge=2)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.fast >= self.slow:
+            raise ValueError("均線交叉的短天期必須小於長天期")
+        return self
+
+
+class Rsi(BaseModel):
+    """條件積木：N 日 RSI 高於（above）或低於（below）某數值。"""
+
+    type: Literal["rsi"]
+    period: int = Field(ge=2)
+    op: Literal["above", "below"]
+    value: float = Field(ge=0, le=100)
+
+
+class MacdCross(BaseModel):
+    """條件積木：MACD 的 DIF 向上（golden）或向下（death）穿越訊號線。"""
+
+    type: Literal["macd_cross"]
+    op: Literal["golden", "death"]
+    fast: int = Field(default=12, ge=1)
+    slow: int = Field(default=26, ge=2)
+    signal: int = Field(default=9, ge=1)
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.fast >= self.slow:
+            raise ValueError("MACD 的快線天期必須小於慢線天期")
+        return self
+
+
+class KdCross(BaseModel):
+    """條件積木：K 值向上（golden）或向下（death）穿越 D 值。"""
+
+    type: Literal["kd_cross"]
+    op: Literal["golden", "death"]
+    period: int = Field(default=9, ge=2)
+
+
+class KdLevel(BaseModel):
+    """條件積木：K 值或 D 值高於（above）或低於（below）某數值。"""
+
+    type: Literal["kd_level"]
+    line: Literal["k", "d"]
+    op: Literal["above", "below"]
+    value: float = Field(ge=0, le=100)
+    period: int = Field(default=9, ge=2)
+
+
+class Bollinger(BaseModel):
+    """條件積木：收盤價突破上軌（above_upper）或跌破下軌（below_lower）。"""
+
+    type: Literal["bollinger"]
+    op: Literal["above_upper", "below_lower"]
+    period: int = Field(default=20, ge=2)
+    std: float = Field(default=2, gt=0)
+
+
+class VolumeVsAvg(BaseModel):
+    """條件積木：當天成交量大於（above）或小於（below）前 N 日均量的某倍數。"""
+
+    type: Literal["volume_vs_avg"]
+    op: Literal["above", "below"]
+    period: int = Field(ge=1)
+    multiple: float = Field(gt=0)
+
+
 class CloseVsValue(BaseModel):
     """條件積木：收盤價高於（above）或低於（below）固定價格。"""
 
@@ -73,7 +149,19 @@ class ConditionGroup(BaseModel):
 
 
 Condition = Annotated[
-    CloseVsSma | CloseVsValue | PriceVsLastBuy | PriceVsLastSell | PnlVsAvgCost | ConditionGroup,
+    CloseVsSma
+    | SmaCross
+    | Rsi
+    | MacdCross
+    | KdCross
+    | KdLevel
+    | Bollinger
+    | VolumeVsAvg
+    | CloseVsValue
+    | PriceVsLastBuy
+    | PriceVsLastSell
+    | PnlVsAvgCost
+    | ConditionGroup,
     Field(discriminator="type"),
 ]
 ConditionGroup.model_rebuild()

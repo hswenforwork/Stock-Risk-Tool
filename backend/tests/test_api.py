@@ -81,3 +81,47 @@ def test_sample_strategy_uses_layers_and_exit_batches():
 
     actions = {t["action"] for t in response.json()["trades"]}
     assert {"entry", "add", "exit"} <= actions
+
+
+def test_backtest_with_indicator_strategy():
+    strategy = {
+        "version": 1,
+        "entry_ratios": [1],
+        "exit_ratios": [1],
+        "rules": [
+            {
+                "action": "entry",
+                "condition": {"type": "sma_cross", "op": "golden", "fast": 5, "slow": 20},
+            },
+            {
+                "action": "exit",
+                "condition": {"type": "sma_cross", "op": "death", "fast": 5, "slow": 20},
+            },
+        ],
+    }
+
+    response = client.post(
+        "/api/backtests", json={"initial_capital": 1_000_000, "strategy": strategy}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["trades"]
+
+
+def test_invalid_indicator_parameters_are_rejected_with_reason():
+    strategy = {
+        "version": 1,
+        "rules": [
+            {
+                "action": "entry",
+                "condition": {"type": "sma_cross", "op": "golden", "fast": 20, "slow": 5},
+            }
+        ],
+    }
+
+    response = client.post(
+        "/api/backtests", json={"initial_capital": 1_000_000, "strategy": strategy}
+    )
+
+    assert response.status_code == 422
+    assert "均線交叉的短天期必須小於長天期" in response.text

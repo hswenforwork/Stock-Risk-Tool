@@ -1,17 +1,20 @@
 // 與後端 /api/backtests 對應的型別與呼叫。
 
+import type { Action, Strategy } from './strategy/types'
+
+export type { Action }
+
 export const EARLIEST_START_DATE = '2020-10-26'
 
 export type Lot = 'odd' | 'board'
 
-export type BacktestSettings = {
+export type BacktestRequest = {
   initial_capital: number
   start_date?: string
   end_date?: string
   lot: Lot
+  strategy: Strategy
 }
-
-export type Action = 'entry' | 'add' | 'reduce' | 'exit' | 'stop_loss' | 'take_profit'
 
 export type Trade = {
   date: string
@@ -36,11 +39,11 @@ export class BacktestError extends Error {}
 
 type ValidationError = { detail?: { msg?: string }[] }
 
-export async function runBacktest(settings: BacktestSettings): Promise<PerformanceReport> {
+export async function runBacktest(request: BacktestRequest): Promise<PerformanceReport> {
   const response = await fetch('/api/backtests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings),
+    body: JSON.stringify(request),
   })
   if (response.status === 422) {
     const body = (await response.json().catch(() => ({}))) as ValidationError
