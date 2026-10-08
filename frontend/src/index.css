@@ -125,3 +125,12 @@ main {
   color: var(--up);
   margin: 0 0 12px;
 }
+
+.warnings {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+.warnings li::marker {
+  content: '⚠ ';
+}

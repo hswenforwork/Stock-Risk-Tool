@@ -67,11 +67,11 @@ describe('策略 JSON → 工作區 → 策略 JSON', () => {
   test.each(EVERY_CONDITION.map((c) => [c.type, c] as const))('%s 轉換前後不變', (_, condition) => {
     const strategy = strategyWith(['entry', condition])
 
-    expect(stateToStrategy(strategyToState(strategy))).toEqual({ ok: true, strategy })
+    expect(stateToStrategy(strategyToState(strategy))).toEqual({ ok: true, strategy, warnings: [] })
   })
 
   test('任意巢狀的且／或轉換前後不變', () => {
-    expect(stateToStrategy(strategyToState(NESTED))).toEqual({ ok: true, strategy: NESTED })
+    expect(stateToStrategy(strategyToState(NESTED))).toEqual({ ok: true, strategy: NESTED, warnings: [] })
   })
 
   test('規則順序保持不變', () => {
@@ -81,7 +81,7 @@ describe('策略 JSON → 工作區 → 策略 JSON', () => {
       ['exit', EVERY_CONDITION[2]],
     )
 
-    expect(stateToStrategy(strategyToState(strategy))).toEqual({ ok: true, strategy })
+    expect(stateToStrategy(strategyToState(strategy))).toEqual({ ok: true, strategy, warnings: [] })
   })
 
   test('經過真正的 Blockly 工作區載入與儲存後仍然不變', () => {
@@ -93,6 +93,7 @@ describe('策略 JSON → 工作區 → 策略 JSON', () => {
     expect(stateToStrategy(throughBlockly(strategyToState(strategy)))).toEqual({
       ok: true,
       strategy,
+      warnings: [],
     })
   })
 
@@ -100,6 +101,7 @@ describe('策略 JSON → 工作區 → 策略 JSON', () => {
     expect(stateToStrategy(throughBlockly(strategyToState(DEFAULT_STRATEGY)))).toEqual({
       ok: true,
       strategy: DEFAULT_STRATEGY,
+      warnings: [],
     })
   })
 })
@@ -166,6 +168,108 @@ describe('不完整的策略', () => {
     const state = strategyToState(NESTED)
     state.blocks!.blocks.push({ type: 'cond_rsi', fields: { PERIOD: 14, OP: 'above', VALUE: 70 } })
 
-    expect(stateToStrategy(state)).toEqual({ ok: true, strategy: NESTED })
+    expect(stateToStrategy(state)).toEqual({ ok: true, strategy: NESTED, warnings: [] })
+  })
+})
+
+describe('加減碼、停損停利與分批比例（#11）', () => {
+  const POSITION_CONDITIONS: Condition[] = [
+    { type: 'price_vs_last_buy', op: 'up', pct: 0.05 },
+    { type: 'price_vs_last_buy', op: 'down', pct: 0.1 },
+    { type: 'price_vs_last_sell', op: 'up', pct: 0.03 },
+    { type: 'price_vs_last_sell', op: 'down', pct: 0.025 },
+    { type: 'pnl_vs_avg_cost', op: 'gain', pct: 0.2 },
+    { type: 'pnl_vs_avg_cost', op: 'loss', pct: 0.08 },
+  ]
+
+  const FULL: Strategy = {
+    version: 1,
+    entry_ratios: [0.5, 0.3, 0.2],
+    exit_ratios: [0.6, 0.4],
+    rules: [
+      { action: 'stop_loss', condition: { type: 'pnl_vs_avg_cost', op: 'loss', pct: 0.08 } },
+      { action: 'take_profit', condition: { type: 'pnl_vs_avg_cost', op: 'gain', pct: 0.2 } },
+      { action: 'exit', condition: { type: 'sma_cross', op: 'death', fast: 5, slow: 20 } },
+      { action: 'reduce', condition: { type: 'price_vs_last_sell', op: 'down', pct: 0.03 } },
+      { action: 'add', condition: { type: 'price_vs_last_buy', op: 'up', pct: 0.05 } },
+      { action: 'entry', condition: { type: 'sma_cross', op: 'golden', fast: 5, slow: 20 } },
+    ],
+  }
+
+  test.each(POSITION_CONDITIONS.map((c) => [`${c.type} ${'op' in c ? c.op : ''}`, c] as const))(
+    '%s 轉換前後不變（積木上以百分比顯示）',
+    (_, condition) => {
+      const strategy = strategyWith(['add', condition])
+
+      expect(stateToStrategy(throughBlockly(strategyToState(strategy)))).toEqual({
+        ok: true,
+        strategy,
+        warnings: [],
+      })
+    },
+  )
+
+  test('百分比顯示在積木上', () => {
+    const state = strategyToState(strategyWith(['add', POSITION_CONDITIONS[0]]))
+    const condition = state.blocks!.blocks[0].inputs!.RULES.block!.inputs!.CONDITION.block!
+
+    expect(condition.fields).toEqual({ OP: 'up', PCT: 5 })
+  })
+
+  test('六種動作、進場比例與出場比例轉換前後不變', () => {
+    expect(stateToStrategy(throughBlockly(strategyToState(FULL)))).toEqual({
+      ok: true,
+      strategy: FULL,
+      warnings: [],
+    })
+  })
+
+  test('比例在策略積木上以「/」分隔的百分比顯示', () => {
+    const root = strategyToState(FULL).blocks!.blocks[0]
+
+    expect(root.fields).toEqual({ ENTRY_RATIOS: '50/30/20', EXIT_RATIOS: '60/40' })
+  })
+
+  test.each([
+    ['50/30', '進場比例'],
+    ['50/abc/50', '進場比例'],
+    ['100/0', '進場比例'],
+    ['', '進場比例'],
+    ['20/20/20/20/10/10', '進場比例'],
+  ])('進場比例「%s」不合法', (text, name) => {
+    const state = strategyToState(FULL)
+    state.blocks!.blocks[0].fields!.ENTRY_RATIOS = text
+
+    const result = stateToStrategy(state)
+
+    expect(result.ok).toBe(false)
+    expect(!result.ok && result.errors[0]).toContain(name)
+  })
+
+  test('比例允許空白與小數', () => {
+    const state = strategyToState(FULL)
+    state.blocks!.blocks[0].fields!.EXIT_RATIOS = ' 33.4 / 33.3 / 33.3 '
+
+    const result = stateToStrategy(state)
+
+    expect(result.ok && result.strategy.exit_ratios).toEqual([0.334, 0.333, 0.333])
+  })
+
+  test('停損規則沒有排在第一條時提出警告，但仍可回測', () => {
+    const strategy: Strategy = { ...FULL, rules: [FULL.rules[5], ...FULL.rules.slice(0, 5)] }
+
+    const result = stateToStrategy(strategyToState(strategy))
+
+    expect(result).toEqual({
+      ok: true,
+      strategy,
+      warnings: ['停損規則沒有排在第一條：同一天其他規則成立時，停損可能不會執行。'],
+    })
+  })
+
+  test('沒有停損規則時不提出警告', () => {
+    const result = stateToStrategy(strategyToState(NESTED))
+
+    expect(result.ok && result.warnings).toEqual([])
   })
 })

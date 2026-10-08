@@ -16,6 +16,7 @@ const COLOURS = {
   trend: 160,
   oscillator: 20,
   volume: 60,
+  position: 330,
 }
 
 type Arg = Record<string, unknown> & { type: string; name?: string }
@@ -50,9 +51,13 @@ function condition(
   args0: Arg[],
   colour: number,
   tooltip: string,
-): BlockDefinition & { conditionType: string } {
-  return { type, conditionType, message0, args0, output: CONDITION, colour, tooltip }
+  percentFields: string[] = [],
+): BlockDefinition & { conditionType: string; percentFields: string[] } {
+  return { type, conditionType, percentFields, message0, args0, output: CONDITION, colour, tooltip }
 }
+
+/** 積木上以百分比顯示、策略 JSON 存小數的欄位，例如 PCT 5 ↔ pct 0.05。 */
+const PCT = num('PCT', 5, 0.01, undefined, 0.01)
 
 /** 條件積木：積木類型 → 策略 JSON 的條件類型。 */
 export const CONDITION_BLOCKS = [
@@ -156,21 +161,77 @@ export const CONDITION_BLOCKS = [
     COLOURS.volume,
     '當天成交量與前 N 日（不含當天）平均成交量比較',
   ),
+  condition(
+    'cond_price_vs_last_buy',
+    'price_vs_last_buy',
+    '收盤價比上一批買進價 %1 %2 %%',
+    [
+      dropdown('OP', [
+        ['上漲', 'up'],
+        ['下跌', 'down'],
+      ]),
+      PCT,
+    ],
+    COLOURS.position,
+    '用於加碼：上漲為順勢加碼，下跌為攤平。空手時不成立。',
+    ['PCT'],
+  ),
+  condition(
+    'cond_price_vs_last_sell',
+    'price_vs_last_sell',
+    '收盤價比上一批賣出價 %1 %2 %%',
+    [
+      dropdown('OP', [
+        ['上漲', 'up'],
+        ['下跌', 'down'],
+      ]),
+      PCT,
+    ],
+    COLOURS.position,
+    '用於減碼；本段持倉還沒賣過時以平均成本為基準。空手時不成立。',
+    ['PCT'],
+  ),
+  condition(
+    'cond_pnl_vs_avg_cost',
+    'pnl_vs_avg_cost',
+    '以平均成本計算 %1 %2 %%',
+    [
+      dropdown('OP', [
+        ['獲利', 'gain'],
+        ['虧損', 'loss'],
+      ]),
+      PCT,
+    ],
+    COLOURS.position,
+    '用於停利或停損。空手時不成立。',
+    ['PCT'],
+  ),
 ]
 
 export const ACTION_OPTIONS: [string, string][] = [
   ['進場', 'entry'],
+  ['加碼', 'add'],
   ['出場', 'exit'],
+  ['減碼', 'reduce'],
+  ['停損', 'stop_loss'],
+  ['停利', 'take_profit'],
 ]
 
 const STRUCTURE_BLOCKS: BlockDefinition[] = [
   {
     type: ROOT_BLOCK,
     message0: '策略（由上往下比對，每天只執行第一條成立的規則）',
-    message1: '%1',
-    args1: [{ type: 'input_statement', name: 'RULES', check: RULE }],
+    message1: '進場比例 %1 %%　出場比例 %2 %%',
+    args1: [
+      { type: 'field_input', name: 'ENTRY_RATIOS', text: '50/30/20' },
+      { type: 'field_input', name: 'EXIT_RATIOS', text: '50/30/20' },
+    ],
+    message2: '%1',
+    args2: [{ type: 'input_statement', name: 'RULES', check: RULE }],
     colour: COLOURS.strategy,
-    tooltip: '把規則接在這裡；越上面的規則優先順序越高',
+    tooltip:
+      '進場比例：每一層占預計投入資金的百分比；出場比例：每一批占出場開始時持股的百分比。' +
+      '以「/」分隔、合計 100%。規則越上面優先順序越高。',
   },
   {
     type: RULE_BLOCK,
@@ -182,7 +243,9 @@ const STRUCTURE_BLOCKS: BlockDefinition[] = [
     previousStatement: RULE,
     nextStatement: RULE,
     colour: COLOURS.strategy,
-    tooltip: '規則：條件成立時，下一個交易日開盤執行動作',
+    tooltip:
+      '規則：條件成立時，下一個交易日開盤執行動作。進場與加碼買進一層；出場、減碼與停利' +
+      '依出場比例賣出一批；停損一次出清。',
   },
   {
     type: GROUP_BLOCK,
@@ -252,6 +315,14 @@ export const TOOLBOX = {
       name: '成交量',
       colour: String(COLOURS.volume),
       contents: [{ kind: 'block', type: 'cond_volume_vs_avg' }],
+    },
+    {
+      kind: 'category',
+      name: '持倉（加減碼、停損停利）',
+      colour: String(COLOURS.position),
+      contents: ['cond_price_vs_last_buy', 'cond_price_vs_last_sell', 'cond_pnl_vs_avg_cost'].map(
+        (type) => ({ kind: 'block', type }),
+      ),
     },
   ],
 }

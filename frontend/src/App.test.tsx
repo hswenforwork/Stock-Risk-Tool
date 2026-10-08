@@ -22,7 +22,7 @@ const STRATEGY = {
 }
 
 beforeEach(() => {
-  editor.result = { ok: true, strategy: STRATEGY }
+  editor.result = { ok: true, strategy: STRATEGY, warnings: [] }
 })
 
 const REPORT = {
@@ -174,6 +174,17 @@ test('策略不完整時列出問題且不能回測', async () => {
   expect(within(problems).getAllByRole('listitem')).toHaveLength(2)
   expect(problems).toHaveTextContent('第 1 條規則缺少條件。')
   expect(screen.getByRole('button', { name: '回測' })).toBeDisabled()
+})
+
+test('策略有警告時顯示警告，但仍可回測', async () => {
+  editor.result = { ok: true, strategy: STRATEGY, warnings: ['停損規則沒有排在第一條'] }
+
+  render(<App />)
+
+  expect(await screen.findByRole('list', { name: '策略的提醒' })).toHaveTextContent(
+    '停損規則沒有排在第一條',
+  )
+  expect(screen.getByRole('button', { name: '回測' })).toBeEnabled()
 })
 
 test('回測失敗時顯示錯誤訊息', async () => {
