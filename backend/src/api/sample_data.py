@@ -8,9 +8,20 @@ from backtest import Bar, Strategy
 SAMPLE_STRATEGY = Strategy.model_validate(
     {
         "version": 1,
+        "entry_ratios": [0.5, 0.3, 0.2],
+        "exit_ratios": [0.5, 0.5],
         "rules": [
-            {"action": "entry", "condition": {"type": "close_vs_sma", "op": "above", "period": 20}},
+            {
+                "action": "stop_loss",
+                "condition": {"type": "pnl_vs_avg_cost", "op": "loss", "pct": 0.08},
+            },
             {"action": "exit", "condition": {"type": "close_vs_sma", "op": "below", "period": 20}},
+            {
+                "action": "reduce",
+                "condition": {"type": "price_vs_last_sell", "op": "down", "pct": 0.03},
+            },
+            {"action": "add", "condition": {"type": "price_vs_last_buy", "op": "up", "pct": 0.03}},
+            {"action": "entry", "condition": {"type": "close_vs_sma", "op": "above", "period": 20}},
         ],
     }
 )

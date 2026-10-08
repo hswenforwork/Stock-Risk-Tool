@@ -8,6 +8,8 @@ from backtest import BacktestSettings, Bar, Strategy, run_backtest
 
 SMA3_STRATEGY = {
     "version": 1,
+    "entry_ratios": [1],  # 一次全進、一次全出
+    "exit_ratios": [1],
     "rules": [
         {"action": "entry", "condition": {"type": "close_vs_sma", "op": "above", "period": 3}},
         {"action": "exit", "condition": {"type": "close_vs_sma", "op": "below", "period": 3}},
