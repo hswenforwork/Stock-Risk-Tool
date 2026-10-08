@@ -1,15 +1,18 @@
 """回測引擎的輸入與輸出型別。用語依 GLOSSARY.md。"""
 
 from datetime import date
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 STRATEGY_FORMAT_VERSION = 1
 
+# 盤中零股交易開放日；回測區間不得早於這天（ADR 0005）
+EARLIEST_START_DATE = date(2020, 10, 26)
+
 
 class Bar(BaseModel):
-    """一個交易日的日 K（原始股價）。"""
+    """一個交易日的日 K（原始股價）。close 為 0 代表當天沒有成交（停牌）。"""
 
     date: date
     open: float
@@ -45,7 +48,43 @@ class Strategy(BaseModel):
 
 
 class BacktestSettings(BaseModel):
+    """回測設定。交易成本的預設值見規格 #2。"""
+
     initial_capital: float = Field(gt=0)
+    start_date: date | None = None
+    end_date: date | None = None
+    lot: Literal["odd", "board"] = "odd"
+    """成交單位：零股（1 股）或整張（1,000 股）。"""
+    fee_discount: float = Field(default=0.6, ge=0, le=1)
+    """手續費折扣，套用在法定費率 0.1425% 上。"""
+    min_fee: float = Field(default=1, ge=0)
+    """每筆最低手續費（元）。"""
+    slippage: float = Field(default=0.001, ge=0, le=0.1)
+    """滑價比例：買進價往上加、賣出價往下扣。"""
+    is_etf: bool = False
+    """標的是否為 ETF，決定證交稅率。"""
+
+    @model_validator(mode="after")
+    def _check_dates(self) -> Self:
+        if self.start_date is not None and self.start_date < EARLIEST_START_DATE:
+            raise ValueError(f"回測區間最早只能從 {EARLIEST_START_DATE} 開始（盤中零股交易開放日）")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("回測結束日不得早於起始日")
+        return self
+
+
+class Trade(BaseModel):
+    """一筆成交。"""
+
+    date: date
+    action: Literal["entry", "exit"]
+    shares: int
+    price: float
+    """含滑價的成交價。"""
+    fee: float
+    tax: float
+    delayed: bool
+    """訊號是否因停牌而延後成交。"""
 
 
 class PerformanceReport(BaseModel):
@@ -54,3 +93,4 @@ class PerformanceReport(BaseModel):
     initial_capital: float
     final_equity: float
     total_return: float
+    trades: list[Trade]
